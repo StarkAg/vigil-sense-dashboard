@@ -54,4 +54,5 @@ Thumbs.db
 *.mp4
 !static/**/*.jpg
 !static/**/*.png
+!screenshots/*.png
 
