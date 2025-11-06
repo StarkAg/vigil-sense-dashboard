@@ -4,7 +4,7 @@ Flask Backend for Live Monitoring Dashboard
 Real Hardware Integration: Arduino UNO R4 WiFi + Pi Camera v3
 """
 
-from flask import Flask, render_template, Response, jsonify
+from flask import Flask, render_template, Response, jsonify, request
 from flask_cors import CORS
 import cv2
 import serial
@@ -17,6 +17,7 @@ import re
 import subprocess
 import numpy as np
 from ultralytics import YOLO
+import requests
 
 app = Flask(__name__)
 CORS(app)
@@ -45,6 +46,14 @@ camera_process = None
 # YOLO model for person detection
 yolo_model = None
 person_count = 0
+previous_person_count = 0
+
+# Telegram Bot Configuration
+TELEGRAM_BOT_TOKEN = "8466970568:AAHbWgIEzGKsCZto38IcqmZ4wG4yAslcgNg"
+TELEGRAM_CHAT_ID = "946411640"
+TELEGRAM_ENABLED = True  # Enabled with existing credentials
+last_alert_time = 0
+alert_cooldown = 30  # Seconds between alerts (prevents spam)
 
 def find_arduino_port():
     """Find Arduino UNO R4 WiFi port"""
@@ -198,16 +207,40 @@ def init_yolo():
         print("   Continuing without YOLO detection...")
         yolo_model = None
 
+def send_telegram_alert(message):
+    """Send alert message to Telegram"""
+    global TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_ENABLED
+    
+    if not TELEGRAM_ENABLED or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+    
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML"
+        }
+        response = requests.post(url, json=payload, timeout=5)
+        if response.status_code == 200:
+            return True
+        else:
+            print(f"⚠️  Telegram alert failed: {response.status_code}")
+            return False
+    except Exception as e:
+        print(f"⚠️  Telegram alert error: {e}")
+        return False
+
 def detect_people(frame):
     """Detect people in frame using YOLOv8 and draw bounding boxes"""
-    global person_count, yolo_model
+    global person_count, yolo_model, previous_person_count, last_alert_time, alert_cooldown
     
     if yolo_model is None:
         return frame
     
     try:
-        # Run YOLO inference
-        results = yolo_model(frame, classes=[0], verbose=False)  # class 0 = person
+        # Run YOLO inference (smaller imgsz for lower latency)
+        results = yolo_model(frame, classes=[0], verbose=False, imgsz=480)  # class 0 = person
         
         person_count = 0
         
@@ -239,6 +272,37 @@ def detect_people(frame):
         cv2.rectangle(frame, (10, 10), (200, 50), (0, 0, 0), -1)
         cv2.putText(frame, count_text, (15, 35),
                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+        
+        # Send Telegram alert when person count changes
+        current_time = time.time()
+        if person_count != previous_person_count:
+            if person_count > 0 and (current_time - last_alert_time) >= alert_cooldown:
+                # People detected - send alert
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                message = f"🚨 <b>Person Detected!</b>\n\n"
+                message += f"👥 <b>Count:</b> {person_count} person(s)\n"
+                message += f"🕐 <b>Time:</b> {timestamp}\n"
+                message += f"📍 <b>Location:</b> VigilSense Monitoring Area\n\n"
+                message += f"⚠️ Check live feed: http://10.120.83.221:8080"
+                
+                if send_telegram_alert(message):
+                    print(f"✅ Telegram alert sent: {person_count} person(s) detected")
+                    last_alert_time = current_time
+                else:
+                    print(f"⚠️  Failed to send Telegram alert")
+            elif person_count == 0 and previous_person_count > 0:
+                # All people left - send confirmation
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                message = f"✅ <b>Area Clear</b>\n\n"
+                message += f"👥 <b>Count:</b> 0 persons\n"
+                message += f"🕐 <b>Time:</b> {timestamp}\n"
+                message += f"📍 <b>Location:</b> VigilSense Monitoring Area"
+                
+                if send_telegram_alert(message):
+                    print(f"✅ Telegram alert sent: Area cleared")
+                    last_alert_time = current_time
+            
+            previous_person_count = person_count
         
     except Exception as e:
         print(f"Error in YOLO detection: {e}")
@@ -273,9 +337,9 @@ def init_camera():
         camera_process = subprocess.Popen(
             [
                 'rpicam-vid',
-                '--width', '1280',
-                '--height', '720',
-                '--framerate', '30',
+                '--width', '640',
+                '--height', '480',
+                '--framerate', '24',
                 '--codec', 'mjpeg',
                 '--inline',
                 '--timeout', '0',
@@ -358,8 +422,8 @@ def generate_frames():
                             # Run YOLO person detection
                             frame = detect_people(frame)
                             
-                            # Re-encode to JPEG
-                            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                            # Re-encode to JPEG (lower quality to reduce bandwidth/latency)
+                            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                             if ret:
                                 jpeg_data = buffer.tobytes()
                     except Exception as e:
@@ -380,7 +444,7 @@ def generate_frames():
         else:
             # Generate mock frame if camera not available
             frame = generate_mock_frame()
-            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
             if ret:
                 frame_bytes = buffer.tobytes()
                 yield (b'--frame\r\n'
@@ -452,8 +516,38 @@ def get_people_count():
     """Get current person count from YOLO detection"""
     return jsonify({
         "count": person_count,
-        "yolo_enabled": yolo_model is not None
+        "yolo_enabled": yolo_model is not None,
+        "telegram_enabled": TELEGRAM_ENABLED
     })
+
+@app.route('/api/telegram/status')
+def telegram_status():
+    """Get Telegram alert configuration"""
+    return jsonify({
+        "enabled": TELEGRAM_ENABLED,
+        "cooldown": alert_cooldown
+    })
+
+@app.route('/api/telegram/toggle', methods=['POST'])
+def telegram_toggle():
+    """Enable/disable Telegram alerts from the UI"""
+    global TELEGRAM_ENABLED
+    try:
+        data = request.get_json(silent=True) or {}
+        if 'enabled' not in data:
+            return jsonify({"status": "error", "message": "Missing 'enabled' boolean"}), 400
+        TELEGRAM_ENABLED = bool(data['enabled'])
+        return jsonify({"status": "success", "enabled": TELEGRAM_ENABLED})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+@app.route('/api/telegram/test')
+def test_telegram():
+    """Test Telegram alert"""
+    if send_telegram_alert("🧪 <b>Test Alert</b>\n\nThis is a test message from VigilSense Dashboard."):
+        return jsonify({"status": "success", "message": "Test alert sent!"})
+    else:
+        return jsonify({"status": "error", "message": "Telegram not configured or failed to send"}), 400
 
 if __name__ == '__main__':
     # Initialize hardware

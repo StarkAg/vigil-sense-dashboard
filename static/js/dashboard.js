@@ -330,5 +330,51 @@ document.addEventListener('DOMContentLoaded', function() {
     setInterval(updateSensorData, 2000);      // Update sensors every 2 seconds
     setInterval(updateSystemStatus, 2000);    // Update status every 2 seconds
 
+    // Setup Telegram toggle
+    initTelegramToggle();
+
     console.log('VigilSense Dashboard initialized');
 });
+
+// Initialize Telegram alerts toggle
+function initTelegramToggle() {
+    const btn = document.getElementById('telegramToggle');
+    const stateEl = document.getElementById('telegramState');
+    if (!btn || !stateEl) return;
+
+    // Load initial state
+    fetch('/api/telegram/status')
+        .then(r => r.json())
+        .then(s => {
+            renderTelegramState(s.enabled);
+        })
+        .catch(() => renderTelegramState(false));
+
+    // Click to toggle
+    btn.addEventListener('click', () => {
+        const isOn = stateEl.textContent === 'ON';
+        const next = !isOn;
+        fetch('/api/telegram/toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: next })
+        })
+            .then(r => r.json())
+            .then(res => {
+                if (res && res.status === 'success') {
+                    renderTelegramState(res.enabled);
+                }
+            })
+            .catch(() => {/* noop */});
+    });
+}
+
+function renderTelegramState(enabled) {
+    const stateEl = document.getElementById('telegramState');
+    const btn = document.getElementById('telegramToggle');
+    if (!stateEl || !btn) return;
+    stateEl.textContent = enabled ? 'ON' : 'OFF';
+    btn.className = enabled
+        ? 'px-4 py-2 border border-green-600 rounded text-sm font-medium text-white hover:bg-gray-900 transition-colors'
+        : 'px-4 py-2 border border-gray-600 rounded text-sm font-medium text-white hover:bg-gray-900 transition-colors';
+}
