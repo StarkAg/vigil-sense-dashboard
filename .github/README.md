@@ -53,10 +53,10 @@ VigilSense combines **Raspberry Pi**, **Arduino UNO R4 WiFi**, and **AI-powered 
 
 ## 📸 Screenshots
 
-![Dashboard Main](screenshots/dashboard_main.png)
+![Dashboard Main](../screenshots/dashboard_main.png)
 *Main dashboard with live camera feed, sensor cards, and trend graphs*
 
-![Detection Logs](screenshots/dashboard_logs.png)
+![Detection Logs](../screenshots/dashboard_logs.png)
 *Detailed detection log table with timestamp and sensor readings*
 
 ---
