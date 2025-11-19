@@ -59,3 +59,4 @@ echo "📝 View logs: ssh mrstark@$PI_HOST 'tail -f /tmp/vigil_dashboard.log'"
 echo ""
 
 
+
